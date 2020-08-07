@@ -1,0 +1,1301 @@
+---
+title: "Farmers Market Analysis R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+by Michiel Besseling
+
+This document walks through the code used to obtain the results of the project entitled "Negative Binomial Regression of Farmers Market Occurrences.". The section include:
+
++Data Cleaning and Joining
++Visualizations
++PCA and Hierarchical Clustering
++Model Building and Diagnostics
+
+#Data Cleaning and Joining
+This section will cover how I cleaned and joined the multiple tables.
+
+## Loading Packages
+The R commands for this project will be supplied as needed. First, the following libraries, functions, and conflict preferences will need to be loaded.
+```{r echo=FALSE, message=FALSE}
+# rm(list = ls())
+setwd("/Volumes/Macintosh HD - Data/SCHOOL/WGU/CapstoneProject")  ##set your path to the Capstone Folder
+library(tidycensus)
+library(dplyr)
+library(tidyverse)
+library(tigris)
+library(leaflet)
+library(stringr)
+library(sf)
+library(purrr)
+library(zipcode)
+library(stringi)
+library(ggplot2)
+library(devtools)
+library(tmap)         
+library(tmaptools)  
+library(FactoMineR)
+library(tm)
+library(maps)
+library(stats)
+library(pscl)
+library(factoextra)
+library(devtools)
+library(PerformanceAnalytics)
+library(scales)
+library(conflicted)
+library(ResourceSelection)
+library(caret)
+library(MASS)
+library(mpath)
+library(DataExplorer)
+library(corrplot)
+library(knitr)
+library(boot)
+library(countreg)
+
+## set conflicts
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+conflict_prefer("zeroinfl", "pscl")
+
+## custom functions
+medianWithoutNA = function(x) {
+  median(x[which(!is.na(x))])
+}
+add_cols <- function(.data, ..., .f = sum){
+  tmp <- dplyr::select_at(.data, dplyr::vars(...))
+  purrr::pmap_dbl(tmp, .f = .f)
+} ## great function to sum up multiple columns from https://github.com/tidyverse/dplyr/issues/4544
+
+options(scipen = 999) ## turn off scientific notation
+```
+
+## Data Cleaning
+The farmers market, election, USDA, and zip code data files are next to be uploaded.  Because most of these files use state and county codes, such as "003," we set the appropriate columns to character columns and add leading 0's where necessary.  Additionally we are adding the FIPS code to the USDA data, which is a concatenation of the state and county codes.
+
+The farmers market data can be found here: https://www.kaggle.com/madeleineferguson/farmers-markets-in-the-united-states?select=farmers_markets_from_usda.csv
+
+The election data set (which is awesome, btw) can be found at: https://public.opendatasoft.com/explore/dataset/usa-2016-presidential-election-by-county/information/?disjunctive.state&refine.state=Texas&dataChart=eyJxdWVyaWVzIjpbeyJjaGFydHMiOlt7InR5cGUiOiJjb2x1bW4iLCJmdW5jIjoiQVZHIiwieUF4aXMiOiJyZXAxNl9mcmFjIiwic2NpZW50aWZpY0Rpc3BsYXkiOnRydWUsImNvbG9yIjoiI0U5MUQwRSJ9LHsidHlwZSI6ImNvbHVtbiIsImZ1bmMiOiJBVkciLCJ5QXhpcyI6ImRlbTE2X2ZyYWMiLCJzY2llbnRpZmljRGlzcGxheSI6dHJ1ZSwiY29sb3IiOiIjMjMyMDY2In1dLCJ4QXhpcyI6InN0YXRlIiwibWF4cG9pbnRzIjoyMDAsInNvcnQiOiIiLCJjb25maWciOnsiZGF0YXNldCI6InVzYS0yMDE2LXByZXNpZGVudGlhbC1lbGVjdGlvbi1ieS1jb3VudHkiLCJvcHRpb25zIjp7ImRpc2p1bmN0aXZlLnN0YXRlIjp0cnVlLCJyZWZpbmUuc3RhdGUiOiJUZXhhcyJ9fX1dLCJ0aW1lc2NhbGUiOiIiLCJkaXNwbGF5TGVnZW5kIjp0cnVlLCJhbGlnbk1vbnRoIjp0cnVlfQ%3D%3D&basemap=mapbox.light&location=5,38.73695,-100.08545
+
+The USDA data was obtained using the QuickStat filters at: https://quickstats.nass.usda.gov/
+Data was collected at the county level for the 2017 estimates.
+```{r}
+farmers_markets = read.csv("Raw Data/farmers_markets_from_usda.csv") %>% mutate_if(is.factor, as.character) 
+
+Election2016 = read.csv("Raw Data/Election2016byCounty.csv", 
+                        colClasses = c(Fips = "character")) %>% mutate_if(is.factor, as.character) 
+
+zips_in_county_subdiv = read.table("Raw Data/Zip Code Referential Table.txt", header = TRUE, sep = ",",
+                         colClasses = c(ZCTA5 = "character", 
+                         STATE =    "character",  COUNTY = "character", COUSUB = "character",  
+                         GEOID  = "character", CLASSFP = "character"))
+
+County_Code_Ref =  read.csv("Cleaned Data/county_code_ref.csv", stringsAsFactors = FALSE) %>%
+  dplyr::select(-X) %>% 
+  mutate(StateCode = ifelse(nchar(StateCode) == 1, paste0("0", StateCode), StateCode),
+         CountyCode = ifelse(nchar(CountyCode) == 1, paste0("0", CountyCode), CountyCode),
+         CountyCode = ifelse(nchar(CountyCode) == 2, paste0("0", CountyCode), CountyCode),
+         Fips = paste0(StateCode,CountyCode))
+  
+animal_total_sales = read.csv("Raw Data/USDA DATA/AnimalTotalByCounty.csv",
+                        colClasses = c(State.ANSI = "character", County.ANSI = "character" )) %>%
+  mutate(State.ANSI = ifelse(nchar(State.ANSI) == 1, paste0("0", State.ANSI), State.ANSI),
+         County.ANSI = ifelse(nchar(County.ANSI) == 1, paste0("0", County.ANSI), County.ANSI),
+         County.ANSI = ifelse(nchar(County.ANSI) == 2, paste0("0", County.ANSI), County.ANSI),
+         Fips = paste0(State.ANSI,County.ANSI))
+
+crop_total_sales = read.csv("Raw Data/USDA DATA/CropTotalsSalesDollars.csv",
+          colClasses = c(State.ANSI = "character", County.ANSI = "character" )) %>%
+  mutate(State.ANSI = ifelse(nchar(State.ANSI) == 1, paste0("0", State.ANSI), State.ANSI),
+         County.ANSI = ifelse(nchar(County.ANSI) == 1, paste0("0", County.ANSI), County.ANSI),
+         County.ANSI = ifelse(nchar(County.ANSI) == 2, paste0("0", County.ANSI), County.ANSI),
+         Fips = paste0(State.ANSI,County.ANSI))
+
+fruit_and_nuts_total_sales = read.csv("Raw Data/USDA DATA/FruitNutsSAlesDollars.csv",
+          colClasses = c(State.ANSI = "character", County.ANSI = "character" )) %>%
+  mutate(State.ANSI = ifelse(nchar(State.ANSI) == 1, paste0("0", State.ANSI), State.ANSI),
+         County.ANSI = ifelse(nchar(County.ANSI) == 1, paste0("0", County.ANSI), County.ANSI),
+         County.ANSI = ifelse(nchar(County.ANSI) == 2, paste0("0", County.ANSI), County.ANSI),
+         Fips = paste0(State.ANSI,County.ANSI))
+
+veggie_total_sales = read.csv("Raw Data/USDA DATA/VeggieTotalSalesDollars.csv",
+          colClasses = c(State.ANSI = "character", County.ANSI = "character" )) %>%
+  mutate(State.ANSI = ifelse(nchar(State.ANSI) == 1, paste0("0", State.ANSI), State.ANSI),
+         County.ANSI = ifelse(nchar(County.ANSI) == 1, paste0("0", County.ANSI), County.ANSI),
+         County.ANSI = ifelse(nchar(County.ANSI) == 2, paste0("0", County.ANSI), County.ANSI),
+         Fips = paste0(State.ANSI,County.ANSI))
+
+AG_land = read.csv("Raw Data/USDA DATA/AGLand.csv",
+           colClasses = c(State.ANSI = "character", County.ANSI = "character" )) %>%
+  mutate(State.ANSI = ifelse(nchar(State.ANSI) == 1, paste0("0", State.ANSI), State.ANSI),
+         County.ANSI = ifelse(nchar(County.ANSI) == 1, paste0("0", County.ANSI), County.ANSI),
+         County.ANSI = ifelse(nchar(County.ANSI) == 2, paste0("0", County.ANSI), County.ANSI),
+         Fips = paste0(State.ANSI,County.ANSI))
+```
+
+Here is what is missing form the Farmers Market table.
+```{r}
+plot_missing(farmers_markets)
+```
+Not bad.
+
+The goal will be to create a frequency table with the farmers market data with the number of farmers markets per county, along with cleaning and matching incomplete entries.  The USDA data can be combined into one data set.  The zip code data will be used as a reference, assigning a given zip code to the county where the largest portion of residents live (zip codes can span more than one county).  The election data set is complete.  All of these tables will be joined by using the FIPS code as a primary key.
+
+## USDA Data Joining
+FIPS codes will be used to join all six tables, which contain the values of the given statistic. The CV is a measurement of the reliability of the figure and its value will be not be used in this study.  Alaska will not be included in the population since it does not have traditional counties.
+
+Next the six tables are joined together using the FIPS code as a primary key.  Alaska, state code 02, is being filtered out.  Each variable is renamed.
+```{r}
+U1 = animal_total_sales %>% dplyr::select(Fips, State, County, State.ANSI,County.ANSI, Ag.District, Value) %>% rename( AnimalSales = Value) %>% filter(State.ANSI != "02") %>% left_join(crop_total_sales %>% filter(Year == 2017) %>% select(Fips, Value)   %>% rename(CropSales = Value), by = "Fips") %>%  left_join(fruit_and_nuts_total_sales %>% filter(Year == 2017) %>% select(Fips, Value)   %>% rename(FruitNutSales = Value), by = "Fips")%>%  left_join(veggie_total_sales %>% filter(Year == 2017) %>% select(Fips, Value)   %>% rename(VeggieSales = Value), by = "Fips") %>% left_join(AG_land %>% filter(Year == 2017) %>% select(Fips, Value)   %>% rename(AgLandAcres = Value), by = "Fips") %>% filter(!State == "02")
+
+head(U1)
+str(U1)
+```
+
+What is missing?
+```{r}
+plot_missing(U1) + scale_fill_manual("Band", values = c("Good"= "gold","OK"="olivedrab4")) + theme_minimal()
+```
+
+Using the NASS glossary, the code (D) is for disclosed. This coding is causing numeric variables to be interpreted as a character.  Let's see what's missing.
+```{r}
+tot_na1 = apply(U1, 2, function(x) length(which(is.na(x))))
+tot_na1[tot_na1 > 0]
+```
+
+The missing or disclosed numeric variables are removed and the columns are formatted to be numeric variables. 
+```{r}
+## (D) = disclosed, (H) = high, 99.95%+, (Z) = almost 0 (from NASS glossary)
+## remove commas, change to numeric variables
+w = 7:11 ## column indices of variables to be imputed
+U1 = cbind(U1[ ,-w], apply(U1[ ,w], 2, trimws))
+U1 = cbind(U1[ ,-w], apply(U1[ ,w], 2, function(y) gsub("(D)", NA, y)))
+U1 = cbind(U1[ ,-w], apply(U1[ ,w], 2, function(y) gsub(",", "", y)))
+U1 = cbind(U1[ ,-w], apply(U1[ ,w], 2, as.numeric))
+```
+
+Missing and disclosed values will be imputed by using the agricultural district medians.  
+```{r}
+U2 = U1 %>%  group_by(Ag.District) %>% filter(!is.na(State)) %>% 
+             mutate(AnimalSales = ifelse(is.na(AnimalSales), medianWithoutNA(AnimalSales),
+                                        AnimalSales),
+             FruitNutSales  = ifelse(is.na(FruitNutSales ), medianWithoutNA(FruitNutSales ),
+                                     FruitNutSales ),
+             VeggieSales  = ifelse(is.na(VeggieSales), medianWithoutNA(VeggieSales),
+                                   VeggieSales),
+            CropSales = ifelse(is.na(CropSales), medianWithoutNA(CropSales), CropSales),
+            AgLandAcres = ifelse(is.na(AgLandAcres), medianWithoutNA(AgLandAcres), AgLandAcres),
+                   ) %>% ungroup()
+```
+
+Let's see what is still missing.
+```{r}
+tot_na2 = apply(U2, 2, function(x) length(which(is.na(x))))
+tot_na2
+```
+
+The remaining NA's will be imputed using state medians.
+```{r}
+U3 = U2 %>%  group_by(State) %>%
+  mutate(AnimalSales = ifelse(is.na(AnimalSales), medianWithoutNA(AnimalSales), AnimalSales),
+        FruitNutSales  = ifelse(is.na(FruitNutSales ), medianWithoutNA(FruitNutSales ),      FruitNutSales ),
+         VeggieSales  = ifelse(is.na(VeggieSales), medianWithoutNA(VeggieSales), VeggieSales),
+         CropSales = ifelse(is.na(CropSales), medianWithoutNA(CropSales), CropSales),
+          AgLandAcres = ifelse(is.na(AgLandAcres), medianWithoutNA(AgLandAcres), AgLandAcres),
+   ) %>% ungroup()
+```
+
+Hopefully no more NA"s.
+```{r}
+tot_na3 = apply(U3, 2, function(x) length(which(is.na(x))))
+tot_na3
+```
+
+Now we write the csv file to be used again later.  It should be noted that this data set uses the current set of FIPS codes, which changed in 2015.  There were a few changes to the codes, particularly in the state of Virginia.
+```{r}
+USDA_data_cleaned = U3
+write.csv(U3, "Cleaned Data/USDA_data.csv")
+```
+
+## Election Data
+This data set contains many useful pieces of information compiled through several sources.  The link has the details on how this data was compiled.  (https://github.com/Deleetdk/USA.county.data).  
+```{r}
+dim(Election2016)
+str(Election2016[ ,1:25])
+length(unique(Election2016$County))
+```
+
+Some information is redundant.  We will keep the percentages of votes by political party, and exclude the columns that contain the number of Democratic, Republican, Green and Libertarian Party votes. 
+```{r}
+E1 = Election2016 %>%  filter(ST != "AK") %>% dplyr::select(State:Votes, Republicans.2016:Autumn.Tmin, temp, precip) 
+```
+
+Checking NA's.  
+```{r}
+tot_na1 = apply(E1, 2, function(x) length(which(is.na(x))))
+tot_na1[tot_na1 > 0]
+```
+Homicide rates and infant mortality have too many NA's so it will be dropped.  Otherwise state medians will be used to impute the remaining missing values.  There are many missing temperatures but these will be imputed by state medians, which should be fairly representative of the county.
+
+```{r echo=FALSE, message=FALSE}
+E2 = E1 %>% dplyr::select(-Homicide.rate, -Infant.mortality ) %>%
+  group_by(State) %>%
+  mutate_each(funs(ifelse(is.na(.),median(., na.rm = TRUE),.)))  %>% ungroup()
+```
+
+Checking NA's left.
+```{r}
+tot_na2 = apply(E2, 2, function(x) length(which(is.na(x))))
+tot_na2[tot_na2 > 0]
+```
+
+Remaining missing will be imputed by global column medians.
+```{r}
+E3 = E2  %>%
+  mutate_each(funs(ifelse(is.na(.),median(., na.rm = TRUE),.))) 
+```
+
+Checking NA's.
+```{r}
+tot_na3 = apply(E3, 2, function(x) length(which(is.na(x))))
+tot_na3[tot_na3 > 0]
+```
+
+Good to go!  Write the CSV file for future use.
+```{r}
+Election2016Cleaned = E3
+write.csv(E3, "Cleaned Data/Election2016Cleaned.csv")
+```
+
+## Census Data
+Use `tidycensus` package to link up with census API. 
+
+First load the list of available variables to download.  
+```{r}
+census_variables = load_variables(year = 2010, dataset = "sf1", cache = TRUE)
+```
+
+
+I would like to create the following variables:
+              family to household ratio  = P018002/P018001
+              married household to family household ratio = P018003/P018002
+              urban ratio = H002002 / H002001
+              renter occupied = 		H004004 / H004001
+              household size categories = H013002:H013008 / H013001
+              Ave househould size = 	H012001
+              Ave family size  = P037A001
+              total female pop = P012026/ P012001
+              male age groups =   (P012003:7 (under 20)), (P012008:10 (20-24)) , 
+                                   (P012011:14( 25-44)), (P012015:6 (45-54)), 
+                                   (P012017 (55-59)), (P012018:25 (60+))
+                                  / P012002 (total)
+              female age groups =   (P0120273:31 (under 20)), (P012032:34 (20-24)) , 
+                                   (P012038:38( 25-44)), (P012039:40 (45-54)), 
+                                   (P012041 (55-59)), (P012042:49 (60+))
+                                  / P012026 (total)
+              husband - wife - children families ratio = 	P038003/ 	P038001
+              
+Let's list the variable codes in a vector, as well as the states in the population.
+```{r}
+vars = c(paste0("P01800",1:3), "H002001", "H002002", "H004001" , "H004004", "H012001",
+         paste0("H01300", 1:8), "P037A001", paste0("P01200", 1:9), paste0("P0120", 10:49),
+         "P038001", "P038003")
+states = c(state.name, "District Of Columbia") ## get the state names
+states =states[-2] ## take out Alaska
+```
+
+Now we upload the raw data from the 2010 census.  Choose a wide format so each variable gets its own column. The `map_dr()` function allows us to get the county statistics over every state in the population.  The geometry will be accessed later for mapping purposes.
+```{r echo=FALSE, message=FALSE}
+census_raw_data = map_dfr(
+  states,
+  ~ get_decennial(
+    geography = "county",
+    variables = 	vars,
+    state = .,
+    year = 2010,
+    geometry = FALSE, 
+    output = "wide"
+  )
+) 
+
+```
+
+Now let's turn this raw data into the ratios I'm after and drop the raw numbers.  These are the first of my derived variables.
+```{r}
+Census_data_cleaned = census_raw_data %>% rename(Fips = GEOID) %>% 
+                          mutate(FamilyRatio = P018002/P018001,
+                                 MarriedHouseholdRatio = P018003/P018002,
+                                 RenterOccupied = H004004/H004001,
+                                 AveHousehouldSize = 	H012001,
+                                 AveFamilySize  = P037A001,
+                                 TotalFemale  = P012026/ P012001,
+                                 MaleUnder20 =  add_cols(.,  P012003:P012007)  / P012002,
+                                 Male20to24 = add_cols(.,P012008:P012010) / P012002,
+                                 Male25to44 = add_cols(.,P012011:P012014) / P012002,
+                                 Male44to54 = add_cols(.,P012015:P012016) / P012002,
+                                 Male55to59 = P012017 / P012002,
+                                 MaleOver59 = add_cols(.,P012018:P012025) / P012026,
+                                 FemaleUnder20 = add_cols(.,P012027:P012031) / P012026,
+                                 Female20to24 = add_cols(.,P012032:P012034) / P012026,
+                                 Female25to44 = add_cols(.,P012035:P012038) / P012026,
+                                 Female45to54 = add_cols(.,P012039:P012040) / P012026,
+                                 Female55to59 = P012041 / P012026,
+                                 FemaleOver59 = add_cols(.,P012042:P012049) / P012026,
+                                 HusbandWifeFamilyRatio = P038003/ 	P038001
+    
+                                 ) %>% dplyr::select(-all_of(vars))
+head(Census_data_cleaned)
+```
+Looking good!
+
+The link below is for the definitions used by the USCB.   
+https://www.census.gov/programs-surveys/cps/technical-documentation/subject-definitions.html#household
+
+Now let's write this as a separate CSV file.
+```{r}
+write.csv(Census_data_cleaned, "Cleaned Data/Census_data_cleaned.csv")
+```
+
+## Zip Code Referential Table
+The farmers market table contains some incomplete records.  The county of each farmers market is needed to create a frequency table but there exists many missing or unmatched (misspelled or otherwise) county names on the farmers market table.  Additionally, there is no FIPS code provided on the table. The purpose of this section is to create a referential table so a zip code can be matched to its county.  However, some zip code span more than one county.  To resolve this, it has been decided to match each zip code with the county where the most amount of residents from that zip code.
+
+A copy of a zip code to county subdivision reference table is available through the US Census Bureau.  
+```{r}
+str(zips_in_county_subdiv)
+```
+This table contains data on the population, number of housing units, land area for section of the zip code contained in each county.  The "CS" prefix refers to the county subdivision of that zip code.  A county is composed of multiple subdivisions, and we can use that fact to calculate the total land area and housing units of each county given this table.
+```{r}
+Z1 = zips_in_county_subdiv %>% group_by(STATE, COUNTY) %>% 
+  mutate(CountyHU = sum(CSHU), CountyArea = sum(CSAREA)) %>% ungroup()
+```
+
+Next the zip codes are arranged by descending population.  FIPS codes are added and only the most populous section of each unique zip code is selected.
+```{r}
+Z2 = Z1 %>% arrange(ZCTA5, desc(POPPT)) %>% mutate(Fips = paste0(STATE, COUNTY))  %>% select(-CLASSFP)##sort by zip and population
+zips = unique(zips_in_county_subdiv$ZCTA5) ## keep only the first unique zip
+Z3 = Z2[!duplicated(Z2$ZCTA5),  ] #clean
+```
+
+The `tidyCENSUS` package contains the county names corresponding to each FIPS code.  We create a reference table.
+```{r}
+County_Code_Ref = fips_codes %>% mutate(Fips = paste0(state_code, county_code))
+head(County_Code_Ref)
+```
+
+Lastly we join the Z3 table with the County_Code_Ref table to include county names.
+```{r}
+Z4 = left_join(Z3, County_Code_Ref %>% dplyr::select(Fips, county, state_name, state), by = "Fips") %>% rename(ST = state, Zip = ZCTA5)
+```
+
+Lastly rearrange to be more user-friendly.
+```{r}
+zip_unique = Z4 %>% dplyr::select(Zip, Fips, county, state_name, ST, STATE:CountyArea)
+write.csv(zip_unique, "Cleaned Data/Zip Unique.csv")
+```
+
+## Farmers Market Data Set Cleaning
+A frequency of the number of farmers market per county will be created.  Missing or incomplete county names will need to be imputed by zip code.  If a zip code is missing, the `zipcode` package can match cities to zip codes, although some cities span more than one zip code.
+```{r}
+dim(farmers_markets)
+str(farmers_markets[ ,1:30])
+```
+Inspecting the zip codes.  They should be five digits of course.
+```{r}
+table(nchar(farmers_markets$zip))
+sum(is.na(farmers_markets$zip))
+```
+
+Some zip code are missing leading 0's, some have a hyphenated suffix, some have mistakes, and some are missing.  We add an ID column and add leading 0's to 3 and 4 digit zips.  Additionally, we need the county names to match up correctly in order to locate the FIPS code.  So we trim white space, fix capitalization, and add Parish to county names in Louisiana.
+```{r}
+farmers_markets = cbind( ID = 1:nrow(farmers_markets), farmers_markets)
+F1 = farmers_markets %>% mutate(City = str_to_title(trimws(city, which = "both")),
+                                State = str_to_title(trimws(State)),
+                                County = str_to_title(County),
+                                County = str_replace(County, "County",""),
+                                County = trimws(County, which = "both"),
+                                ST = state2abbr(State),
+                                zip = ifelse(nchar(zip) == 3, paste0("0",zip), zip),
+                                zip = ifelse(nchar(zip) == 4, paste0("0",zip), zip),
+                                zip = ifelse(nchar(zip) == 10, str_sub(zip, 1, 5), zip),
+                                County = ifelse(State == "LA", paste0(County, "Parish"),
+                                                paste(County, "County", sep =" "))) %>%
+                          select(ID, City, County, State, ST, zip)
+```
+
+Next we use the `zipcode` package to find zip codes using city and state names if a remainig zip code does not have five digits.
+```{r}
+data("zipcode")
+F2 = F1 %>% mutate(zip = ifelse(nchar(zip == 5), zip,
+                               zipcode$zip[zipcode$city == City & zipcode$state == ST] ),
+                   County = ifelse(ST == "DC", str_replace(County, "County", ""), County))
+sum(is.na(F2$County))
+```
+
+There are still a few missing counties, but we will deal with these later.
+```{r}
+F3 = left_join(F2, County_Code_Ref, by = c(c("County"="county"), c("ST" = "state")), all.x=T) %>%
+        mutate(Fips = ifelse(ST == "DC", "11001", Fips)) %>%
+        select(-state_name)
+```
+
+Now we drop our first observations outside the "lower 49" states and find out how many FIPS codes are still missing.
+```{r}
+dropped_IDs = F3$ID[F3$State %in% c("Alaska", "Puerto Rico", "Virgin Islands")] ## create running vector of dropped ID's
+length(dropped_IDs)
+F4 = F3 %>% filter(!State %in% c("Alaska", "Puerto Rico", "Virgin Islands"))
+sum(is.na(F4$Fips))
+```
+
+We did drop 83 farmers markets, but have 326 FIPS codes to find.  We put these observations into a new data frame so we can find these missing county names and/or FIPS code.
+```{r}
+na_county = F4[is.na(F4$Fips), c(1,2,3,6)]
+table(nchar(na_county$zip))
+```
+
+Most of these missing do have zip codes so let's see if we can find the counties using the zip code reference table.
+```{r}
+found_county = left_join(na_county, zip_unique, by = c("zip" = "Zip" ) ) %>% select(ID:ST)
+```
+
+These found counties will be joined to the running farmers market table. 
+```{r}
+F5 = left_join(F4, found_county, by = "ID")
+F6 = F5 %>% mutate(County = ifelse(is.na(County.x), County.y, County.x),
+                   Fips = ifelse(is.na(Fips.x), Fips.y, Fips.x)) %>%
+            select(ID, City.x, County, State, ST.x, zip.x, state_code, county_code, Fips )
+colnames(F6) = gsub(".x", "", colnames(F6))
+sum(is.na(F6$Fips))
+```
+Now we're left with 52 FIPS codes to find.
+
+As many of the last few remaining NA's are located.  Some are done by hand.
+```{r}
+na_county2 = F6[is.na(F6$Fips), ] %>% 
+                mutate(County = str_replace(County, "County", ""),
+                       County = trimws(County, which = "both"),
+                       County = ifelse(ST == "LA", paste(County, "Parish", sep = " "),
+                                       paste(County, "County", sep =" ")),
+                       County = str_replace(County, "St.", "Saint"),
+                       County = ifelse(str_sub(County, 1, 2) %in% c("De", "Mc", "O'", "Du"),
+                                       paste0(str_sub(County, 1,2), str_to_upper(str_sub(County, 3,3)), str_sub(County, 4,-1)),  County),
+                       County = ifelse(City == "Colorado Springs", "El Paso County", County),
+                       County = ifelse(City == "St. Louis", "St. Louis County", County),
+                       County = ifelse(County == "Fond Du Lac County", "Fond du Lac County", County)
+                       )
+found_county2 = left_join(na_county2, County_Code_Ref, by = c(c("County" = "county"), c("ST" = "state")))                       
+```
+
+Join these last counties that were able to be matched to the running farmers market table, and drop the remaining.  We are keeping a running vector of the IDs of the dropped rows.
+```{r}
+dropped_IDs = c(dropped_IDs,found_county2$ID[is.na(found_county2$Fips.y)])
+
+found_county2 = found_county2[!is.na(found_county2$Fips.y),] %>%
+                    select(ID, City, County, State, ST, zip, 
+                           Fips.y, state_code.y, county_code.y)
+## merge with running farmers market table
+F7 = left_join(F6, found_county2, by = "ID") %>%
+        mutate( Fips = ifelse(is.na(Fips), Fips.y, Fips),
+                County = ifelse(is.na(Fips), County.y, County.x)) %>%
+        select(ID, City.x, County.x, State.x, ST.x, zip.x, state_code, 
+               county_code, Fips) 
+colnames(F7) = gsub(".x","", colnames((F7)))
+```
+
+We create a CSV file containing each farmers market's FIPS code.
+```{r}
+length(dropped_IDs) ## only had to drop 116 of 8,804! (some are mobile markets)
+FarmersMarketEach = F7
+write.csv(F7, "Cleaned Data/FarmersMarketEach.csv")  ## each market
+Droppped_FM = farmers_markets[dropped_IDs, ] ##data frame of dropped markets
+```
+
+Of our 8,804 original farmers markets, we dropped 116 which were either outside the lower 49 states or we were unable to match the market to one county. It should be noted that some of these markets are "mobile markets."
+
+Next we write a csv file with each market.  This is not the frequency table we're after, but this is a useful table for later applications.
+```{r}
+## lastly make a freq table by each Fips. Only lower 49 states
+Fips_table = data.frame(table(F7$Fips)) %>% rename( Fips = Var1) %>% mutate_if(is.factor, as.character) 
+F8 = left_join(County_Code_Ref %>% filter(!state %in% c("AK","PR","VI")), 
+               Fips_table, by = "Fips", all.x = TRUE) %>% 
+          mutate(Freq = ifelse(is.na(Freq), 0, Freq))
+AllCountyFMfreq = F8
+write.csv(F8, "Cleaned Data/AllCountyFarmersMarketFreq.csv")
+```
+
+## Final Join
+The last step now is to join the Election, USDA, Zip Code, and Farmers Market frequency tables together.
+
+Load these cleaned data sets if they're not already in the global environment.
+```{r}
+Election2016Cleaned = read.csv("Cleaned Data/Election2016Cleaned.csv", stringsAsFactors = FALSE) %>%
+        dplyr::select(-X)  %>% 
+  mutate(Fips = ifelse(nchar(Fips) == 4, paste0("0", Fips), Fips))
+
+USDA_data_cleaned = read.csv("Cleaned Data/USDA_data.csv", stringsAsFactors = FALSE) %>%
+        dplyr::select(-X)  %>% 
+  mutate(Fips = ifelse(nchar(Fips) == 4, paste0("0", Fips), Fips))
+
+Census_data_cleaned = read.csv("Cleaned Data/Census_data_cleaned.csv", stringsAsFactors = FALSE) %>%
+        dplyr::select(-X) %>% 
+  mutate(Fips = ifelse(nchar(Fips) == 4, paste0("0", Fips), Fips))
+
+FarmersMarketEach = read.csv("Cleaned Data/FarmersMarketEach.csv", stringsAsFactors = FALSE) %>%
+        dplyr::select(-X)  %>% 
+  mutate(Fips = ifelse(nchar(Fips) == 4, paste0("0", Fips), Fips))
+                                  
+AllCountyFMfreq = read.csv("Cleaned Data/AllCountyFarmersMarketFreq.csv", stringsAsFactors = FALSE) %>%
+        dplyr::select(-X)  %>% 
+  mutate(Fips = ifelse(nchar(Fips) == 4, paste0("0", Fips), Fips))
+
+zip_unique = read.csv("Cleaned Data/Zip Unique.csv", stringsAsFactors = FALSE) %>% dplyr::select(-X) %>% 
+                    mutate(Zip = ifelse(nchar(Zip) == 3, paste0("00)", Zip), Zip),
+                           Zip = ifelse(nchar(Zip) == 4, paste0("0)", Zip), Zip),
+                           Fips = ifelse(nchar(Fips) == 4, paste0("0", Fips), Fips))
+```
+
+Below we join the election and USDA data to the farmers market frequency table, and inspect any NA's.  Below are the first 20 NA's (to save space).
+```{r}
+V1 = full_join(AllCountyFMfreq %>% dplyr::select(Fips,county, state, state_name, Freq), USDA_data_cleaned, by = "Fips") 
+V12 = full_join(V1, Election2016Cleaned, by = "Fips") %>% dplyr::select(-State.x, -County.x, -State.ANSI, -County.ANSI)
+V2 = full_join(V12, Census_data_cleaned, by ="Fips")
+
+tot_naF = apply(V2, 2, function(x) length(which(is.na(x))))
+tot_naF[tot_naF > 0 ][1:20]
+```
+
+Here is a view of our last few NA's.
+```{r}
+final_nas1 = V2[is.na(V2$Ag.District), 1:16]
+final_nas2 = V2[is.na(V2$MAR), 1:16]
+final_nas3 = rbind(final_nas1,final_nas2)
+final_nas4 = final_nas3[!duplicated(final_nas3$Fips), ]
+final_nas4
+```
+
+The 12 rows missing election data and census data, which all have 0 farmers market frequency, are dropped.
+```{r}
+## drop rows with both missing Election2016 data from running final table
+V3 = V2 %>% filter( !is.na(MAR))  ## all row is missing and no Freq's lost
+dropped_fips = setdiff(V2$Fips, V3$Fips)
+```
+
+The county area and housing unit from the zips table needs to be added.  
+```{r}
+V4 = left_join(V3, zip_unique %>% dplyr::select(Fips, CountyArea, CountyHU), by = "Fips") %>% dplyr::distinct() %>% dplyr::select( -state, -County.y, -State.y)
+```
+
+Lastly, use state medians to impute missing USDA data.  The state of Virginia has multiple entries imputed.
+```{r}
+V5 = V4 %>% group_by(state_name) %>%
+  mutate(CountyArea = ifelse(is.na(CountyArea), medianWithoutNA(CountyArea), CountyArea),
+         CountyHU = ifelse(is.na(CountyHU), medianWithoutNA(CountyHU), CountyHU),
+         AnimalSales = ifelse(is.na(AnimalSales), medianWithoutNA(AnimalSales), AnimalSales),
+         FruitNutSales  = ifelse(is.na(FruitNutSales ), medianWithoutNA(FruitNutSales ), FruitNutSales ),
+         VeggieSales  = ifelse(is.na(VeggieSales), medianWithoutNA(VeggieSales), VeggieSales),
+         CropSales = ifelse(is.na(CropSales), medianWithoutNA(CropSales), CropSales),
+         AgLandAcres = ifelse(is.na(AgLandAcres), medianWithoutNA(AgLandAcres), AgLandAcres),
+  ) %>% ungroup() 
+```
+
+Let's see what is still missing.
+```{r}
+tot_na = apply(V5, 2, function(x) length(which(is.na(x))))
+tot_na[tot_na > 0 ] ## remainig NA's
+V5[is.na(V5$AnimalSales),1:10]  ## the missing USDA fips
+```
+
+Since agriculture is likely limited in DC, it will be assigned the minimum value for each missing agricultural variable.
+```{r}
+V5[291,6:10] = as.list(apply(V5[ ,6:10],2, function(x) min(x, na.rm = TRUE)))
+```
+
+Last remaining NA's.
+```{r}
+V5[is.na(V5$Ag.District),1:8 ]
+```
+
+Many Virginia cities are missing the agricultural district name, so those missing will get their own category.  Otherwise the rest will be in an "unknown" category.
+```{r}
+V5[is.na(V5$Ag.District) & V5$ST == "VA", 5] = "Virginia (Unknown)"
+V5[is.na(V5$Ag.District), 5] = "Unknown"
+V5 = data.frame(V5)
+```
+
+Let's check to see if all NA's are gone and the frequencies add up correctly.
+```{r}
+tot_na5 = apply(V5, 2, function(x) length(which(is.na(x))))
+tot_na5[tot_na5 > 0 ]
+sum(V5$Freq) ## adds up correctly! 8804 original with 116 dropped IDs
+8804 - 116
+```
+We add row names for presentation by concatenating county nd state names.  Then we rename and reorder the columns.
+```{r}
+rn = make.names( paste(V5$county, V5$ST, sep = " "), unique = TRUE)
+V55 = V5 %>% mutate(RowName = rn) %>% rename(County = county, State = state_name)
+
+V6 = V55 %>% dplyr::select(Fips, RowName, County, State, Ag.District, Freq, CountyArea, CountyHU, AnimalSales:CountyHU)
+```
+
+Let's make some derived variable looking at the change in votes from 2008 and 2012 for both political parties.  Also include the range from min and max temperatures as a measure of temperature variability.   Additionally, some of the race and weather variables are redundant, so they will be dropped.
+```{r}
+V66 = V6 %>% mutate(
+                 DemChange08 = 100*(Democrats.2016 - Democrats.2008)/Democrats.2008,
+                 DemChange12 = 100*(Democrats.2016 - Democrats.2012)/Democrats.2012,
+                 RepChange08 = 100*(Republicans.2016 - Republicans.2008)/Republicans.2012,
+                 RepChange12 = 100*(Republicans.2016 - Republicans.2012)/Republicans.2008,
+                 OtherRace = Other,
+                 TempRange = Annual.Tmax - Annual.Tmin) %>% dplyr::select(-Asian.American.Population,  
+                 -Native.American.Population, -Annual.Prcp, -Annual.Tavg, -White..Not.Latino..Population, -Latino.Population,
+                 -African.American.Population, -Other.Race.or.Races, -Other  )
+tot_na6 = apply(V6, 2, function(x) length(which(is.na(x))))
+tot_na6[tot_na6 > 0 ]
+```
+
+And we are done!
+```{r}
+All_Final_Data_Cleaned = data.frame(V66) %>% dplyr::select(-ST, -NAME)
+rownames(All_Final_Data_Cleaned) = All_Final_Data_Cleaned$RowName
+write.csv(All_Final_Data_Cleaned, "Cleaned Data/All_Final_Data_Cleaned.csv")
+head(All_Final_Data_Cleaned)
+dim(All_Final_Data_Cleaned)
+```
+Our final data set contains 3,114 rows (counties) of 120 variables.  
+
+Derived Variables:  
+DemChange08, DemChange12, RepChange08, RepChange12, TempRange, FamilyRatio, MarriedHouseholdRatio,   RenterOccupied, AveHousehouldSize, AveFamilySize, TotalFemale, MaleUnder20, Male20to24, Male25to44, Male44to54, Male55to59, MaleOver59, FemaleUnder20, Female20to24, Female25to44, Female44to54, Female55to59, FemaleOver59, HusbandWifeFamilyRatio 
+
+Droppped rows IDs from original farmers markets data set.
+```{r}
+dropped_IDs
+```
+
+# Data Visualization and Exploration
+Here we cover the making of graphs and maps.  The data is explored via PCA and hierarchical clustering.
+
+##Plots and Maps
+Let's start by making some aliases to facilitate the coding.
+```{r}
+## alias for master tables
+D1 = All_Final_Data_Cleaned
+D2 = farmers_markets
+D3 = FarmersMarketEach
+```
+
+Here is a pie chart of zeroes vs. non-zeroes.
+```{r}
+## Pie chart
+B1 = data.frame(table(D1$Freq)) %>% rename( Markets = Var1) ## freq tables of # of markets
+## make an "at least one" category and "red" and "blue" county category
+B2 = B1 %>% mutate(Y = ifelse(B1$Markets != "0" ,1,0))
+X3 = c("Zero", "At least One") ## name it
+Y3 =c()
+Y3[1] = sum(B2$Freq[B2$Y == 0]) ## total 0's
+Y3[2] = sum(B2$Freq[B2$Y == 1]) ## total "at least one"
+B3 = data.frame(X3, Y3 ) %>% rename( Freq = Y3)
+
+pie <- ggplot(B3, aes(x="", y=Freq, fill=X3))+
+  geom_bar(width = 1, stat = "identity") + coord_polar("y")
+PieChart = pie + theme_minimal() + ggtitle( "US Farmers Markets Per County") +
+  theme(plot.title = element_text( face = "bold")) + 
+  ylab("n = 3,114 counties") + xlab("") +
+  labs(fill = "") + geom_text(aes(y = Freq/2 + c(0, cumsum(Freq)[-length(Freq)]),
+                                  label = paste(round((Freq/sum(B3[ ,2]))*100,2), "%",sep="")), size=3) + 
+  scale_fill_manual(values = c("khaki2", "olivedrab4"))
+  
+PieChart
+```
+Nearly 3/4 of counties have at least one farmers market.  Since 27% of counties contain zero farmers markets, it would be worthwhile to investigate zero inflated models.
+
+Let's see the distribution of the response variable, number of farmers markets per county.
+```{r}
+ggplot(All_Final_Data_Cleaned, aes(x=Freq, )) + geom_histogram( fill = "olivedrab4", binwidth = 1) + labs( x= "Number of Farmers Market per County", y ="Frequency", title = "Distribution of Response Variable") + theme(plot.title = element_text(face = "bold", size = 14)) + theme_minimal()
+```
+The distribution of the number of farmers markets per county is skewed right.  Most counties have 0-2 farmers markets.  There are some outliers, like Los Angeles County with 128 farmers markets (and about 10 million residents).  
+
+Since the response variable is a count variable, it is likely to follow either a Poisson or negative binomial distribution, if there is no overdispersion present.  A zero inflated model should be investigated, as there may be factors present in some counties that prevent the county from having any farmers markets.
+
+Next let's see the distribution of markets by state.
+```{r}
+B3 = data.frame(table(FarmersMarketEach$State)) %>% rename( State = Var1) %>% 
+        arrange(Freq) %>% filter(State != "Virgin Islands")
+BarchartStates = B3  %>%
+                      ggplot(aes(x = reorder(State, Freq), y = Freq)) + 
+                      geom_bar(stat="identity", width=0.5, fill =  "olivedrab4", 
+                               color = "gold")  + coord_flip() +
+                      ylab("Number of Farmers Markets by State") + xlab("") +
+                      theme(axis.text.y = element_text(color = "grey20",   
+                                  size = 6.5, angle = 0, face = "plain"),
+                            axis.title.x = element_text(size = 14, face = "bold"), 
+                            axis.title.y = element_text(size = 14, face = "bold")) +
+                      geom_text(aes(label=Freq), hjust=-.3, color="blue",
+                             position = position_dodge(0.9), size=2.5) +
+                      scale_y_continuous(limits = c(0, 800)) + theme_minimal()
+  
+BarchartStates      
+```
+I'm noticing Texas, the second most populous state, is definitely not second in farmers markets.  Might this be a "red state"/"blue state" issue? 
+```{r}
+D4 = D1 %>%  mutate(CountyColor = ifelse(Republicans.2016 > Democrats.2016, "red", "blue")) %>%
+  dplyr::select(Freq, CountyColor, Total.Population)
+
+D4 %>% ggplot(aes(x = CountyColor, y = Freq), col = CountyColor) + geom_point(aes(size = Total.Population, color = CountyColor))  + labs(title = "Political Preference and Population on County Farmers Markets", face = "bold") + xlab("County Political Leaning") + ylab("Number of Farmers Markets") + scale_color_manual(values=c("blue", "red")) + ggplot2::annotate(geom="text", x=1.2, y=25, label="n = 487", color="blue") + ggplot2::annotate(geom="text", x=2.2, y=25, label="n = 2627",color="red")
+```
+There are so many more red counties, but they seem to have much smaller populations, as well as farmers markets.
+
+It is natural to inspect the relationship on the number of farmers markets between county population and median income.
+```{r}
+ggplot(All_Final_Data_Cleaned, aes(x = Total.Population, y = Median.Earnings.2010 )) + geom_point( aes(size = Freq, color = Freq)) + guides(size=FALSE) + labs(title = "Population and Income on County Farmers Markets")  + geom_label_repel(aes(label=ifelse(Freq>45 ,as.character(RowName),'')),hjust=2,vjust=3, size = 3 ) + scale_x_continuous(labels = comma) + scale_color_distiller( palette = "YlGn", direction = 1, name = "Farmers \nMarkets \nFreq.") 
+```
+There is a moderate positive relationship between the number of farmers markets (size and color of bubbles) and county population.  There is also a weak positive relationship between the number of farmers markets and county 2010 median income.
+
+How about family size?  Do counties with larger family size tend to have more farmers markets?
+```{r}
+ggplot(All_Final_Data_Cleaned, aes(x = AveFamilySize, y = Freq )) + geom_point(col = "orange") + labs(title = "Average Family Size and County Farmers Markets")  + geom_label_repel(aes(label=ifelse(Freq>45 ,as.character(RowName),'')),hjust=2,vjust=3, size = 3 ) + scale_x_continuous(labels = comma) 
+```
+Surprisingly the relationship between average family size and farmers markets is not linear.  The largest number of markets tend to occur around an average family size of 3.00.
+
+## Map Data
+
+
+Use `tidycensus` to upload county geography using the API (requires internet connection and may take a few minutes).  Let's upload shape files from the Census Bureau.
+```{r echo=FALSE, message=FALSE}
+states = c(state.name, "District Of Columbia") ## get the state names
+states =states[-2] ## take out Alaska
+## Below is API to US Census Bureau to get county geography
+Geography = map_dfr(
+  states,
+  ~ get_acs(
+    geography = "county",
+    variables = 	"B00001_001",
+    state = .,
+    year = 2018,
+    geometry = T, 
+    output = "wide"
+  )
+) 
+```
+
+Now let's join the cleaned data with the geography data.
+```{r}
+G1 = left_join(Geography %>% dplyr::select(GEOID, geometry), All_Final_Data_Cleaned, by = c( "GEOID" = "Fips" )) %>% filter(State != "Hawaii")  %>% dplyr::select( -GEOID) ## add geometry shape to final data
+rownames(G1) = G1$RowName 
+```
+
+Let's map the number of farmers markets by county.  This is an interactive map (at least when this file is read on a web browser).  Zoom in or click on a county to see the number of farmers markets for that county.
+```{r}
+brks = c(0,1,2,4,8,16,32,128)
+tmap_mode("view")
+tm_shape(G1) + tm_basemap("Stamen.Watercolor") + tm_fill("Freq", breaks = brks, palette = "YlGn") + 
+  tm_layout(legend.position = c(.87,.25),
+            legend.text.size = .5, 
+            title.position = c("center","bottom"),
+            title = "Number of Farmers Markets by County",
+            title.fontface = "bold" ,
+            title.size = 1) + tm_borders(lwd =.4)
+```
+
+Next let's see the population by county.
+```{r}
+brks2 = c(0,2500,5000,10000,20000,50000,100000, 200000, 500000, 1000000, 3000000, 12000000)
+tmap_mode("view")
+tm_shape(G1) + tm_basemap("Stamen.Watercolor") + tm_fill("Total.Population", breaks = brks2, palette = "YlOrRd") + 
+  tm_layout(legend.position = c(.87,.25),
+            legend.text.size = .5, 
+            title.position = c("right","bottom"),
+            title = "Population by County",
+            title.fontface = "bold" ,
+            title.size = 1) + tm_borders(lwd =.4)
+```
+
+Add and map "markets per 1,000 residents' variable.
+```{r}
+G1$MPT = 10000* G1$Freq / G1$Total.Population
+tm_view()
+tm_shape(G1) + tm_basemap("Stamen.Watercolor") + tm_fill("MPT", palette = "YlGn") + 
+  tm_layout(legend.position = c(.87,.25),
+            legend.text.size = .5, 
+            title.position = c("center","top"),
+            title = "Farmers Markets Per 10,000 Residents",
+            title.fontface = "bold" ,
+            title.size = 1) + tm_borders()
+```
+This map is not so useful.  Dark counties are likely counties with very small populations and 1 or 2 farmers markets.
+
+## PCA and Hierarchial Clustering
+PCA is used to investigate the relationship between the individuals and variables in the cleaned data set.
+
+Create a new data frame for PCA use.  PCA will use Ag.District and State as supplemental qualitative variables, and Freq (number of farmers markets) as a supplemental quantitative variable.  All other quantitative variables will be used to construct the dimensions.
+```{r}
+D1 = All_Final_Data_Cleaned
+rownames(D1) = All_Final_Data_Cleaned$RowName
+D2 =  apply(D1[ ,c( 4:5)], 2, as.factor) %>% data.frame()
+D3  = apply(D1[ ,c(6:ncol(D1))], 2, as.numeric) %>% data.frame()
+D4 = cbind(D2, D3) %>% dplyr::select(-lat, -lon)
+D4$State = as.factor(D4$State) # complete unstandarized data set
+D4$Ag.District = as.factor(D4$Ag.District) # complete unstandarized data set
+str(D4[ ,1:10])
+apply(D4, 2, function(x) sum(is.na(x)))[apply(D4, 2, function(x) sum(is.na(x))) > 0] ##how many NA's > 0
+```
+For the PCA, we assume a linear relationship between the variables.  Variables are normalized by `scale.unit  = TRUE` option.  Frequency is a supplemental quantitative variable that is not used in the construction of the dimensions.
+```{r}
+fm.pca = PCA(D4, scale.unit  = TRUE, ncp = 30, quanti.sup = 3, quali.sup = 1:2, graph = TRUE)
+```
+
+Here is the scree plot.
+```{r}
+barplot(fm.pca$eig[,2][1:30], main = "Scree Plot",  
+        ylab = "percent of total variance", 
+        xlab = "first 30 dimensions", col = "orange3", ylim = c(0,25))
+
+```
+There are noticeable drops in the variation between dimensions 5 and 6 and also dimensions 7 and 8.
+
+Here is a cumulative scree plot (is what its called?).
+```{r}
+plot(1:30, fm.pca$eig[1:30 ,3], pch =20, xlab = "Dim. #", ylab = "Cumulative % of Explained Variance")
+lines(1:30, fm.pca$eig[1:30 ,3])
+abline( h = c(80,90), lty =2, col = "blue")     
+```
+
+Let's make a PCA biplot of the first two dimensions and see the contributions to those dimensions.  To avoid cluttering the top contributing 50 counties and top 30 variables are plotted.
+```{r}
+p1 = fviz_pca_biplot(fm.pca, axes = 1:2, select.ind =  list(contrib = 50),
+                select.var = list(contrib = 30), 
+             gradient.cols = "lightgreen", col.ind ="forestgreen",
+             repel = TRUE, labelsize = 2, col.var = "orange3" , col.ind.sup = "skyblue", 
+             fill.ind = "olivedrab4", 
+             col.quanti.sup = "red" , fill.var = "orange3", pointsize = .7 ) + theme_minimal() +
+             ggplot2::annotate("text", x = 12, y = 1, label = "Hotter", col = "firebrick2") +
+             ggplot2::annotate("text", x = -12, y = 1, label = "Colder", col ="royalblue2") +
+             ggplot2::annotate("text", x = 0, y = 25, label = "Politcally Left", col = "royalblue2") +
+             ggplot2::annotate("text", x = 0, y = -15, label = "Politcally Right", col ="firebrick2")
+p2= fviz_add(p1, data.frame(fm.pca$quali.sup$coord[1:50, ], fm.pca$quali.sup$coord[1:50, ]), repel = TRUE, labelsize = 2.3, pointsize = .7 , color = "deepskyblue3") 
+fviz_add(p2,20 * data.frame(fm.pca$quanti.sup$coord), axes = 1:2, geom = "arrow", repel = TRUE, labelsize = 5, pointsize = 2 , color = "magenta", linetype = "solid", lwd = 6) 
+# Contributions of variables to PC1
+fviz_contrib(fm.pca, choice = "var", axes = 1, top = 25)
+# Contributions of variables to PC2
+fviz_contrib(fm.pca, choice = "var", axes = 2, top = 25)
+```
+The first dimension consists primarily of temperature data - warmer climates are on the positive side of the x-axis while colder climates are on the negative x-axis.  (Note: I had a problem matching the magnitude of the supplemental "Freq" vector.  It looks like the all of the variable vectors are scaled up by a factor of 20 from their reported coordinates.  The direction of the vector is preserved.  It should work well as an approximation.)
+
+The second dimension separates politically left leaning counties on the positive side of the y-axis, with politically right leaning counties on the negative y-axis.  Most of the "blue states" are above the x-axis, while "red states" are below the x-axis.
+
+Variables, states, and/or counties near each other on the biplot between the first and second dimensions can be interpreted as similar with respect to temperature and political leaning.  For example, Los Angeles County, located near the top of the plot, has a large y-value, implying it is very left leaning politically.  It's moderate position on the x-axis indicates the temperatures are moderately above average.  
+
+Now let's see the 3rd and 4th dimensions.
+```{r}
+p3 = fviz_pca_biplot(fm.pca, axes = 3:4, select.ind =  list(contrib = 50),
+                select.var = list(contrib = 30), 
+             gradient.cols = "lightgreen", col.ind ="forestgreen",
+             repel = TRUE, labelsize = 2, col.var = "orange3" , col.ind.sup = "skyblue", 
+             fill.ind = "olivedrab4", 
+             col.quanti.sup = "red" , fill.var = "orange3", pointsize = .7 ) + theme_minimal() +
+             ggplot2::annotate("text", x = 10, y = 1, label = "More Families", col = "firebrick2") +
+             ggplot2::annotate("text", x = -12, y = 1, label = "Fewer Families", col ="royalblue2") +
+             ggplot2::annotate("text", x = 0, y = 13, label = "Wetter", col = "royalblue2") +
+             ggplot2::annotate("text", x = 0, y = -15, label = "Drier", col ="firebrick2")
+p4 = fviz_add(p3, data.frame(fm.pca$quali.sup$coord[1:50, ]), axes=3:4,  repel = TRUE, labelsize = 2.3, pointsize = .7 , color = "deepskyblue3") 
+fviz_add(p4,20 * data.frame(fm.pca$quanti.sup$coord), axes = 3:4, geom = "arrow", repel = TRUE, labelsize = 5, pointsize = 2 , color = "magenta", linetype = "solid", lwd = 6) 
+# Contributions of variables to PC3
+fviz_contrib(fm.pca, choice = "var", axes = 3, top = 25)
+# Contributions of variables to PC4
+fviz_contrib(fm.pca, choice = "var", axes = 4, top = 25)
+```
+The third dimension largely separates family size.  The fourth dimension mainly separates precipitation. 
+
+Lastly let's investigate the 5th and 6th dimensions.
+```{r}
+p5 = fviz_pca_biplot(fm.pca, axes = 5:6, select.ind =  list(contrib = 50),
+                select.var = list(contrib = 30), 
+             gradient.cols = "lightgreen", col.ind ="forestgreen",
+             repel = TRUE, labelsize = 2, col.var = "orange3" , col.ind.sup = "skyblue", 
+             fill.ind = "olivedrab4", 
+             col.quanti.sup = "red" , fill.var = "orange3", pointsize = .7 ) + theme_minimal() +
+             ggplot2::annotate("text", x = 10, y = 1, label = "Older", col = "firebrick2") +
+             ggplot2::annotate("text", x = -12, y = 1, label = "Younger", col ="royalblue2") +
+             ggplot2::annotate("text", x = 0, y = 13, label = "Wetter", col = "royalblue2") +
+             ggplot2::annotate("text", x = 0, y = -15, label = "Drier", col ="firebrick2")
+p6 = fviz_add(p5, data.frame(fm.pca$quali.sup$coord[1:50, ]), axes= 5:6,  repel = TRUE, labelsize = 2.3, pointsize = .7 , color = "deepskyblue3") 
+fviz_add(p6,20 * data.frame(fm.pca$quanti.sup$coord), axes = 5:6, geom = "arrow", repel = TRUE, labelsize = 5, pointsize = 2 , color = "magenta", linetype = "solid", lwd = 6) 
+# Contributions of variables to PC5
+fviz_contrib(fm.pca, choice = "var", axes = 5, top = 25)
+# Contributions of variables to PC6
+fviz_contrib(fm.pca, choice = "var", axes = 6, top = 25)
+```
+
+Fantastic.  Now let's save the PCA coordinates as a data frame.
+```{r}
+All_Data_PCA = data.frame(cbind(fm.pca$ind$coord ,All_Final_Data_Cleaned$Freq)) %>% dplyr::select(V31, Dim.1:Dim.30) %>% rename(Freq = V31) 
+write.csv(All_Data_PCA, "All_Data_PCA.csv")
+```
+
+## HIERARCHICAL CLUSTERING
+Goal- identify groups of variables that best separate county profiles.
+
+Choose 7 clusters by drop in inertia gain.  Choose best variables to represent each cluster.
+```{r}
+fm.hcpc<-HCPC(fm.pca ,nb.clust=7 ,graph=TRUE, description = TRUE) 
+```
+
+```{r}
+fviz_cluster(fm.hcpc)
+```
+These graphs are quite cluttered and they are not too useful.
+
+Let's look at the variables of each cluster.  We can see the mean each variable within the given cluster compared to the overall mean.  Positive v.test values indicate that variable's mean is significantly (5%) higher than the overall mean, while negative v.test values indicate that variable's mean is significantly (5%) lower than the overall mean.
+```{r}
+print("########## CLUSTER 1 ##########")
+round(fm.hcpc$desc.var$quanti[[1]][ ,c(1,2,3,6)],3)
+print(c("########## CLUSTER 2 ##########"))
+round(fm.hcpc$desc.var$quanti[[2]][ ,c(1,2,3,6)],3)
+print(c("########## CLUSTER 3 ##########"))
+round(fm.hcpc$desc.var$quanti[[3]][ ,c(1,2,3,6)],3)
+print(c("########## CLUSTER 4 ##########"))
+round(fm.hcpc$desc.var$quanti[[4]][ ,c(1,2,3,6)],3)
+print(c("######### CLUSTER 5 ##########"))
+round(fm.hcpc$desc.var$quanti[[5]][ ,c(1,2,3,6)],3)
+print(c("########## CLUSTER 6 ##########"))
+round(fm.hcpc$desc.var$quanti[[6]][ ,c(1,2,3,6)],3)
+print(c("########## CLUSTER 7 ##########"))
+round(fm.hcpc$desc.var$quanti[[7]][ ,c(1,2,3,6)],3)
+```
+I'll try to generalize these findings.  Remember these variables describe counties.
+
+CLUSTER 1: Older male population, higher elevation, farming, conservative, large area, small household size, married (more retired??)
+
+CLUSTER 2:  educated, married, switched from Obama '08 to Trump '16, females 44-59, insured, healthy
+
+CLUSTER 3:  high income, educated, liberal, married, high ave. household size, employed, healthy
+
+CLUSTER 4: warm, poor health, construction and transportation jobs, single parents, low income, republican
+
+CLUSTER 5: Hispanic, young, farming counties, lower education levels, 
+
+CLUSTER 6: young, renters, educated, democrats,  multicultural, urban, high populations
+
+CLUSTER 7: democrats, poor health, low education, renters, low family size
+
+The number of farmers markets per county is positively correlated with clusters 3 and 6, and negatively correlated with clusters 1, 2, 4, 5, and 7.
+
+Let's write the clusters in some CSV files to use in the report.  Note that these are only the significant (5%) variables that represent each cluster.
+```{r}
+c1 = data.frame(fm.hcpc$desc.var$quanti[1])
+c2 = data.frame(fm.hcpc$desc.var$quanti[2])
+c3 = data.frame(fm.hcpc$desc.var$quanti[3])
+c4 = data.frame(fm.hcpc$desc.var$quanti[4])
+c5 = data.frame(fm.hcpc$desc.var$quanti[5])
+c6 = data.frame(fm.hcpc$desc.var$quanti[6])
+c7 = data.frame(fm.hcpc$desc.var$quanti[7])
+c1 = c1 %>% mutate(ID = 1:nrow(c1), Var = rownames(c1)) %>% 
+            dplyr::select(ID, Var, X1.v.test:X1.p.value)  %>% mutate(Cluster = 1)
+colnames(c1) = gsub("X1.","", colnames(c1) ) 
+c2 = c2 %>% mutate(ID = 1:nrow(c2), Var = rownames(c2)) %>% 
+            dplyr::select(ID, Var, X2.v.test:X2.p.value) %>% mutate(Cluster = 2)
+colnames(c2) = gsub("X2.","", colnames(c2) )  
+c3 = c3 %>% mutate(ID = 1:nrow(c3), Var = rownames(c3)) %>% 
+            dplyr::select(ID, Var, X3.v.test:X3.p.value)  %>% mutate(Cluster = 3)
+colnames(c3) = gsub("X3.","", colnames(c3) )
+c4 = c4 %>% mutate(ID = 1:nrow(c4), Var = rownames(c4)) %>% 
+            dplyr::select(ID, Var, X4.v.test:X4.p.value) %>% mutate(Cluster = 4)
+colnames(c4) = gsub("X4.","", colnames(c4) ) 
+c5 = c5 %>% mutate(ID = 1:nrow(c5), Var = rownames(c5)) %>% 
+            dplyr::select(ID, Var, X5.v.test:X5.p.value)%>% mutate(Cluster = 5)
+colnames(c5) = gsub("X5.","", colnames(c5) ) 
+c6 = c6 %>% mutate(ID = 1:nrow(c6), Var = rownames(c6)) %>% 
+            dplyr::select(ID, Var, X6.v.test:X6.p.value) %>% mutate(Cluster = 6)
+colnames(c6) = gsub("X6.","", colnames(c6) )
+c7 = c7 %>% mutate(ID = 1:nrow(c7), Var = rownames(c7)) %>% 
+            dplyr::select(ID, Var, X7.v.test:X7.p.value) %>% mutate(Cluster = 7)
+colnames(c7) = gsub("X7.","", colnames(c7) ) 
+ClustersAllSigVar = rbind(c1,c2,c3,c4,c5,c6,c7)
+write.csv(ClustersAllSigVar, "Cleaned Data/ClustersAllSigVar.csv")
+```
+
+Hand selecting variables to represent the clusters, then write to a csv file for use in the report.
+```{r}
+C1 = c1[c(1,4,6,9,10,11,12,20,43,76,84), c(2:5,8,9) ] 
+C2 = c2[c(1,2,4,6,7,10,12,34,102,105), c(2:5,8,9) ] 
+C3 = c3[c(2:4,7,8,10,14,15,27,31,64,97), c(2:5,8,9) ] 
+C4 = c4[c(1,4,6,10,11,54,68,71,80), c(2:5,8,9) ] 
+C5 = c5[c(2,17,19,25,30,43,72,85,94,97), c(2:5,8,9) ] 
+C6 = c6[c(2,5,6,8,19,33,76), c(2:5,8,9) ] 
+C7 = c7[c(1,6,8,12,13,18,20,24,78,85,104), c(2:5,8,9) ] 
+
+Clusters = rbind(C1, C2, C3, C4, C5, C6, C7) %>% select(Cluster, Var, Mean.in.category, Overall.mean, p.value)
+Clusters = cbind(Clusters[ ,1:2], apply(Clusters[ ,3:5], 2,function(x) round(x,3)))
+write.csv(Clusters, "Cleaned Data/clusters.csv")
+```
+
+Assign cluster and PCA coordinates to final data set.
+```{r}
+All_Final_Data_Cleaned2 = cbind(All_Final_Data_Cleaned[ ,1:2], fm.hcpc$data.clust, fm.pca$ind$coord) %>% mutate_if(is.factor, as.character)
+write.csv(All_Final_Data_Cleaned2, "Cleaned Data/All_Final_Data_Cleaned2.csv")
+```
+
+Here's the number of farmers markets by cluster.
+```{r}
+All_Final_Data_Cleaned2 %>% ggplot(aes(x = clust, y = Freq, color = clust)) + geom_point(aes(color = clust), show.legend = FALSE)  + scale_fill_brewer(palette="Set1") + labs(title="Farmers Markets by Cluster", face = "bold",x="Cluster", y = "Length") + theme_minimal() 
+```
+
+Oh, lets map the clusters.  Let's add the geography to create a shape file.
+```{r}
+G2 = left_join(G1,  All_Final_Data_Cleaned2, by = "RowName")
+tmap_mode("view")
+tm_shape(G2) + tm_basemap("Stamen.Watercolor") + tm_fill("clust",  palette = "Paired") + 
+  tm_layout(legend.position = c(.87,.25),
+            legend.text.size = .5, 
+            title.position = c("right","bottom"),
+            title = "Counties by Cluster",
+            title.fontface = "bold" ,
+            title.size = 1) + tm_borders(lwd =.4)
+```
+Just a note- Shannon County, SD is missing from the map as it is an outlier with respect to the PCA.  Shannon County has a Native American population over 90%.  So it is not assigned a cluster.
+
+# Modeling and Analysis
+In this section, we will first explore a few regression models.  Since the response variable is a count data, we will explore Poisson, quasipoisson, and negative binomials. Zero inflated models will be investigated but the algorithms tend to fail to converge as the models became slightly more complex. Each variable or combination of variables will be tested in each of the aforementioned models, and the model with the lowest AIC will be selected.  AIC is preferred for this study since it is penalized by the addition of more parameters.  The selected model will be tested using a goodness of fit statistic.
+
+A data frame of each model's predicted value, as well the chi-squared contribution, will be created to ultimately assess which counties deviate most from what is expected under the assumptions of te given model.
+
+### Model 1: log(Total.Population)
+We will use a log transformation on the population variable.  
+
+```{r}
+m1.pois = glm(Freq~ log(Total.Population), data = All_Final_Data_Cleaned2, family  = "poisson")
+m1.nb = glm.nb(Freq~ log(Total.Population), data = All_Final_Data_Cleaned2)
+m1.pois0 = zeroinfl(m1.pois, dist = "poisson")
+m1.nb0 = zeroinfl(m1.pois, dist = "negbin")
+L1 = list(m1.pois, m1.nb, m1.pois0, m1.nb0)
+rbind(c("Poisson", "NegBin", "ZeroInflPoisson", "ZeroInflNegBin"),AIC = round(sapply( L1, AIC),2))
+```
+The negative binomial model is the preferred model.
+
+```{r}
+summary(m1.nb)
+plot(m1.nb)
+m1 = m1.nb
+```
+This was just some brainstorming; I won't use this model.
+
+### Model 2: Family size 
+Studies suggest that females 44-59 represent the largest demographic of shoppers at farmers markets, citing many are purchasing fresh produce o cook for their family.  Thus we lookat average family size, controlling for population.
+```{r}
+m2.pois = glm(Freq~ log(Total.Population) + AveFamilySize, data = All_Final_Data_Cleaned2, family  = "poisson")
+m2.nb = glm.nb(Freq~ log(Total.Population) + AveFamilySize, data = All_Final_Data_Cleaned2)
+m2.pois0 = zeroinfl(m2.pois, dist = "poisson")
+m2.nb0 = zeroinfl(m2.pois, dist = "negbin")
+L2 = list(m2.pois, m2.nb, m2.pois0, m2.nb0)
+rbind(c("Poisson", "NegBin", "ZeroInflPoisson", "ZeroInflNegBin"),AIC = round(sapply( L2, AIC),2))
+```
+Again, the negative binomial model is the preferred model.
+
+```{r}
+summary(m2.nb)
+plot(m2.nb)
+m2 = m2.nb
+```
+This is also still a weak model: it's not a keeper.  Let's run the PCA model next. 
+
+## PCA Regression Models
+Now lets see how the coordinates of the PCA pan out.  We'll use the first 15 dimensions from the PCA, enough to account for 80% of variation between the dimensions.  We will start by using all dimensions to select a distribution. Then we will eliminate non-significant dimensions one at a time, removing the dimension with the highest p-value.
+
+First we fit the most simple model, which would be a Poisson model for count data.
+```{r}
+m3.pois = glm(Freq~ ., data = All_Final_Data_Cleaned2 %>% dplyr::select(Freq, Dim.1:Dim.15), family  = "poisson")
+```
+
+```{r}
+summary(m3.pois)
+plot(m3.pois)
+glm.diag.plots(m3.pois)
+```
+I see evidence of overdispersion.  Let check goodness of fit first.
+
+Here we test H0: The observed farmers market frequencies follow the given Poisson model vs. H1: The observed farmers market frequencies do not follow the given Poisson model, using a chi-squared goodness of fit with N - p = 3114 - 16 (15 dim + intercept) = 3098 df. 
+```{r}
+qchisq(.95, 3098)
+```
+The 5% critical value is 3233.706, which is greater than the observed residual deviance of 5417.8.  So we  reject the null and can conclude that the given poisson model does not fit the observed data.
+
+So a negative binomial model is investigated next.
+```{r}
+m3.nb = glm.nb(Freq~ ., data = All_Final_Data_Cleaned2 %>% dplyr::select(Freq, Dim.1:Dim.15))
+```
+
+```{r}
+summary(m3.nb)
+plot(m3.nb)
+glm.diag.plots(m3.nb)
+qqrplot(m3.nb)
+print(noquote(c("AIC is",AIC(m3.nb))))
+```
+Definitive improvement, but QQ plots looks skewed.  Investigate zero inflated  neg. bin. (ZINB) model, and backwards eliminated zero neg. bin. model, which I will call Reduced ZINB.
+
+```{r}
+m3.nb0 = zeroinfl(m3.pois, dist = "negbin")
+m3.nb00 = be.zeroinfl(m3.nb0, dist = "negbin", data = All_Final_Data_Cleaned2 %>% dplyr::select(Freq, Dim.1:Dim.15))
+```
+
+```{r}
+summary(m3.nb0)
+qqrplot(m3.nb0)
+summary(m3.nb00)
+qqrplot(m3.nb00)
+print(noquote(c("AIC for ZINB is",AIC(m3.nb0))))
+print(noquote(c("AIC for Reduced ZINB is",AIC(m3.nb00))))
+```
+The models' diagnostics look OK.  Let's which models provided significant reductions in AIC using Vuong's test. If two models are not significantly different, choose the simplest model (fewest number of variables).
+
+Testing negative binomial model versus zero inflated negative binomial model.
+```{r}
+vuong(m3.nb, m3.nb0)
+```
+Now I test the zero negative binomial model versus the reduced zero inflated negative binomial model.
+```{r}
+vuong(m3.nb0, m3.nb00)
+```
+There is no significant difference between the ZINB and reduced ZINB.  Since the reduced ZINB model contains fewer variables, it is the preferred model using the PCA coordinates.
+```{r}
+qqrplot(m3.nb00, main = "Q-Q residuals plot \n Model 1: reduced zero inflated negative binomial using PCA")
+AIC(m3.nb00)
+```
+
+## Analyst's Choice
+The PCA analysis from before helps shed light on which variables are collinear.  Furthermore, the previous research into customer profiles helps provide insight on which variables give us reasonable information.  With this in mind, I set out to find some combination of variables that include measures of county population, political preference, family relations, age distribution, income, agricultural data, health, home ownership demographics, and education.  Each variable or variables were selected to reduce AIC in the model while remaining as a significant predictor.  Extreme caution should be used in interpreting the results.
+
+We can see the if the correlation between the predictors.
+```{r}
+M = All_Final_Data_Cleaned2 %>% dplyr::select(Freq, Total.Population,Green.2016  , Median.Earnings.2010   ,Median.Age , RenterOccupied , Poor.physical.health.days , temp, precip , Graduate.Degree, White)
+corrplot(cor(M), title = "Correlation Plot")
+```
+I can't get that title to fit nicely.
+
+Although Graduate degree appears to be collinear with other factors, I have chosen to let it remain in the model since it does tend to lower the AIC in the models I have experimented with and PCA has shown it to be a strong representation in the lower dimensions of the PCA.  Median earnings are divided by 1000 to increase the slope, as near zero estimates have shown to give NA standard error estimates.
+
+Below we create the Poisson and negbin models.
+```{r}
+m5.pois = glm(Freq~  log(Total.Population)  + Green.2016  + Median.Earnings.2010  + Median.Age + RenterOccupied + Poor.physical.health.days + temp +  Graduate.Degree + White , data = All_Final_Data_Cleaned2 %>% mutate(Median.Earnings.2010 = Median.Earnings.2010/1000, family  = "poisson"))
+m5.nb = glm.nb(Freq ~  log(Total.Population)  + Green.2016  + Median.Earnings.2010  + Median.Age + RenterOccupied + Poor.physical.health.days + temp +  Graduate.Degree + White, data = All_Final_Data_Cleaned2 %>% mutate(Median.Earnings.2010 = Median.Earnings.2010/1000 ))
+L5 = list(m5.pois, m5.nb)
+rbind(c("Poisson", "NegBin"),AIC = round(sapply( L5, AIC),2))
+```
+The negbin model has much lower AIC.
+
+Here is a summarry for the poisson model.
+```{r}
+summary(m5.pois)
+glm.diag.plots(m5.pois)
+plot(m5.pois)
+#qqrplot(m5.pois)
+```
+It is a poor fit.
+
+Now the negbin model.
+```{r}
+summary(m5.nb)
+plot(m5.nb)
+AIC(m5.nb)
+```
+
+Goodness of Fit.
+Here we test H0: The observed farmers market frequencies follow the given negative binomial model vs. H1: The observed farmers market frequencies do not follow the given negative binomial model using a chi-squared goodness of fit with N - p = 3114 - 10 (9 variables + intercept) = 3104 df. 
+```{r}
+qchisq(.95, 3104)
+```
+The 5% critical value is 3233.706, which is greater than the observed deviance of 2757.6.  So we fail to reject the null and can conclude that the given negative binomial model does fit the observed data.
+
+Lastly we can use zero inflated model (ZINB) with backwards selection (Reduced ZINB) with the remaining variables to reduce AIC to build a model with the highest predictive power.
+```{r}
+m5.nb0 = zeroinfl(m5.nb, data = All_Final_Data_Cleaned2 %>% mutate(Median.Earnings.2010 = Median.Earnings.2010/1000), dist = "negbin")
+m5.nb00 = be.zeroinfl(m5.nb0,data = All_Final_Data_Cleaned2 %>% mutate(Median.Earnings.2010 = Median.Earnings.2010/1000), dist = "negbin")
+AIC(m5.nb)
+AIC(m5.nb0)
+AIC(m5.nb00)
+```
+As expected, the AIC drops in each subsequent model, although not between ZINB and reduced ZINB.
+
+Next let's check the fit of the ZINB.
+```{r}
+summary(m5.nb0)
+AIC(m5.nb0)
+qqrplot(m5.nb0)
+```
+The diagnostic looks pretty good given the 3,114 rows and complexity of the data.
+
+Let's see if the ZINB model is an improvement on the negbin model.
+```{r}
+vuong(m5.nb, m5.nb0)
+```
+The ZINB is preferred to the negbin model.
+
+Now let's inspect the diagnostics of the reduced ZINB model.
+```{r}
+summary(m5.nb00)
+AIC(m5.nb00)
+qqrplot(m5.nb00)
+```
+Like the ZINB model the diagnostics fit.
+
+Now is there a difference between the ZINB and reduced ZINB?
+```{r}
+vuong(m5.nb0, m5.nb00)
+```
+Using the AIC criteria there is not a difference between the two models.  Thus the model with the fewest number of variables, which is the reduced ZINB model, is the preferred model.
+
+Lastly I will check if the hand selected reduced ZINB model is an improvement of the reduced ZINB model using the PCA.
+```{r}
+vuong(m3.nb00, m5.nb00)
+```
+All signs point to model 2, the hand selected model.
+
+So the reduced ZINB model using the hand selected variables is the model that will be used for this study.
+
+Let's see how the model's prediction overlap over the observed frequencies. 
+```{r, message=FALSE}
+p <- ggplot(All_Final_Data_Cleaned2) +
+    geom_histogram(aes(x = Freq, y = ..density..),
+                   binwidth = 1, fill = "olivedrab", color = "lightgrey") + 
+  xlab("Farmers Market Frequency") + theme_minimal() +
+    geom_density(aes(x = c(m5.nb00$fitted.values), col = "Reduced ZINB Model")) + 
+     xlim(c(-1,20)) +
+  scale_colour_manual("Density", values = c("red", "purple"))
+p
+```
+The visual fit looks great.
+
+## Comparing Estimates
+We'll make a data set containing the observed frequency and the expected frequency under the last four models.  We construct the chi-squared component of each observation and model, and record whether the residual is positive or negative (since we are interested in the counties with fewer observed farmers market than expected under the model).
+```{r}
+Expected = data.frame(cbind(All_Final_Data_Cleaned2$Freq, m5.nb00$fitted.values,
+                 m5.nb00$residuals )) %>% 
+                rename(Freq = X1, Expected = X2, Residual  = X3  ) %>% 
+                mutate(Component = sign(Residual) * (Residual^2)/Expected,
+                       County = rownames(All_Final_Data_Cleaned2) )  %>% 
+                dplyr::select(County, Freq:Component)
+rownames(Expected) = rownames(All_Final_Data_Cleaned2)
+Expected = cbind(County = Expected[,1], round(Expected[ ,2:5], 4)) %>% arrange(Component)
+write.csv(Expected, "ExpectedFarmersMarkets.csv")
+```
+
+```{r}
+head(Expected)
+```
+ 
+Here are the top 30 underserved counties.
+```{r}
+E1 = Expected %>%  slice_min(Component,n = 30) 
+write.csv(E1, "E1.csv")
+```
+Queens.County.NY, Arapahoe.County.CO and Boulder.County.CO are the three leading candidates that show promise for holding more farmers markets.  Queens has only 19 farmers markets when the models predicts 45 farmers markets.  Arapahoe County, CO, containing portions of suburban Denver, has only 4 markets where the models predict 15.
+
+Lastly, a final data set containing the counties' data along with the expected frequencies is created.  This table will allow a researcher to simply look up a county and find the current number of farmers markets, predicted number of farmers markets, cluster, election data, USDA data, Census data, and PCA coordinates in one table.  The table is arranged in order of most underserved to most overserved.
+```{r}
+FinalCounties = left_join(All_Final_Data_Cleaned2, Expected %>% dplyr::select(-Freq), 
+                          by = c("RowName"="County")) %>%
+            dplyr::select(Fips:Freq, Expected, Residual, Component, clust, 
+                          CountyArea:TempRange, Dim.1:Dim.30 ) %>%
+            arrange(Component) %>% rename(Cluster = clust, ExpectedFreq = Expected)
+write.csv(FinalCounties, "Cleaned Data/FarmersMarketPredictions.csv")
+```
+Le fin!
