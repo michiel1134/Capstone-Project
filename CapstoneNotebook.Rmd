@@ -1,11 +1,11 @@
 ---
 title: "Farmers Market Analysis R Notebook"
-author: Michiel Besseling
-date: July 1, 2020
+author: "Michiel Besseling"
+date: "July 1, 2020"
 output:
+  pdf_document: default
   html_document:
     df_print: paged
-  
 ---
 
 This document walks through the code used to obtain the results of the project entitled "Negative Binomial Regression of Farmers Market Occurrences." The section include:
@@ -151,7 +151,7 @@ Not bad.
 
 The goal will be to create a frequency table with the farmers market data with the number of farmers markets per county, along with cleaning and matching incomplete entries.  The USDA data can be combined into one data set.  The zip code data will be used as a reference, assigning a given zip code to the county where the largest portion of residents live (zip codes can span more than one county).  The election data set is complete.  All of these tables will be joined by using the FIPS code as a primary key.
 
-## USDA Data Joining
+### USDA Data Joining
 FIPS codes will be used to join all six tables, which contain the values of the given statistic. The CV is a measurement of the reliability of the figure and its value will be not be used in this study.  Alaska will not be included in the population since it does not have traditional counties.
 
 Next the six tables are joined together using the FIPS code as a primary key.  Alaska, state code 02, is being filtered out.  Each variable is renamed.
@@ -227,7 +227,7 @@ USDA_data_cleaned = U3
 write.csv(U3, "Cleaned Data/USDA_data.csv")
 ```
 
-## Election Data
+### Election Data
 This data set contains many useful pieces of information compiled through several sources.  The link has the details on how this data was compiled.  (https://github.com/Deleetdk/USA.county.data).  
 ```{r}
 dim(Election2016)
@@ -365,7 +365,7 @@ Now let's write this as a separate CSV file.
 write.csv(Census_data_cleaned, "Cleaned Data/Census_data_cleaned.csv")
 ```
 
-## Zip Code Referential Table
+### Zip Code Referential Table
 The farmers market table contains some incomplete records.  The county of each farmers market is needed to create a frequency table but there exists many missing or unmatched (misspelled or otherwise) county names on the farmers market table.  Additionally, there is no FIPS code provided on the table. The purpose of this section is to create a referential table so a zip code can be matched to its county.  However, some zip code span more than one county.  To resolve this, it has been decided to match each zip code with the county where the most amount of residents from that zip code.
 
 A copy of a zip code to county subdivision reference table is available through the US Census Bureau.  
@@ -402,7 +402,7 @@ zip_unique = Z4 %>% dplyr::select(Zip, Fips, county, state_name, ST, STATE:Count
 write.csv(zip_unique, "Cleaned Data/Zip Unique.csv")
 ```
 
-## Farmers Market Data Set Cleaning
+### Farmers Market Data Set Cleaning
 A frequency of the number of farmers market per county will be created.  Missing or incomplete county names will need to be imputed by zip code.  If a zip code is missing, the `zipcode` package can match cities to zip codes, although some cities span more than one zip code.
 ```{r}
 dim(farmers_markets)
@@ -766,7 +766,7 @@ Surprisingly the relationship between average family size and farmers markets is
 ## Map Data
 
 Use `tidycensus` to upload county geography using the API (requires internet connection and may take a few minutes).  Let's upload shape files from the Census Bureau.
-```{r, warning=FALSE, message=FALSE}
+```{r, warning=FALSE, message=FALSE, echo = FALSE}
 states = c(state.name, "District Of Columbia") ## get the state names
 states =states[-2] ## take out Alaska
 ## Below is API to US Census Bureau to get county geography
@@ -777,7 +777,7 @@ Geography = map_dfr(
     variables = 	"B00001_001",
     state = .,
     year = 2018,
-    geometry = TRUE, 
+    geometry = T, 
     output = "wide"
   )
 ) 
@@ -810,7 +810,6 @@ tm_shape(G1) + tm_basemap("Stamen.Watercolor") + tm_fill("Total.Population", bre
   tm_layout(legend.position = c(.87,.25),
             legend.text.size = .5, 
             title.position = c("right","bottom"),
-            title = "Population by County",
             title.fontface = "bold" ,
             title.size = 1) + tm_borders(lwd =.4)
 ```
@@ -818,12 +817,11 @@ tm_shape(G1) + tm_basemap("Stamen.Watercolor") + tm_fill("Total.Population", bre
 Add and map "markets per 1,000 residents' variable.
 ```{r}
 G1$MPT = 10000* G1$Freq / G1$Total.Population
-tm_view()
-tm_shape(G1) + tm_basemap("Stamen.Watercolor") + tm_fill("MPT", palette = "YlGn") + 
+tmap_mode("view")
+tm_shape(G1) + tm_basemap("Stamen.Watercolor") + tm_fill("MPT", palette = "YlGn", title = "Markets/1000") + 
   tm_layout(legend.position = c(.87,.25),
             legend.text.size = .5, 
             title.position = c("center","top"),
-            title = "Farmers Markets Per 10,000 Residents",
             title.fontface = "bold" ,
             title.size = 1) + tm_borders()
 ```
@@ -1049,11 +1047,10 @@ Oh, lets map the clusters.  Let's add the geography to create a shape file.
 ```{r}
 G2 = left_join(G1,  All_Final_Data_Cleaned2, by = "RowName")
 tmap_mode("view")
-tm_shape(G2) + tm_basemap("Stamen.Watercolor") + tm_fill("clust",  palette = "Paired") + 
+tm_shape(G2) + tm_basemap("Stamen.Watercolor") + tm_fill("clust",  palette = "Paired",   title = "Cluster") + 
   tm_layout(legend.position = c(.87,.25),
             legend.text.size = .5, 
             title.position = c("right","bottom"),
-            title = "Counties by Cluster",
             title.fontface = "bold" ,
             title.size = 1) + tm_borders(lwd =.4)
 ```
@@ -1066,7 +1063,6 @@ A data frame of each model's predicted value, as well the chi-squared contributi
 
 ### Model 1: log(Total.Population)
 We will use a log transformation on the population variable.  
-
 ```{r}
 m1.pois = glm(Freq~ log(Total.Population), data = All_Final_Data_Cleaned2, family  = "poisson")
 m1.nb = glm.nb(Freq~ log(Total.Population), data = All_Final_Data_Cleaned2)
@@ -1297,11 +1293,18 @@ Queens.County.NY, Arapahoe.County.CO and Boulder.County.CO are the three leading
 
 Lastly, a final data set containing the counties' data along with the expected frequencies is created.  This table will allow a researcher to simply look up a county and find the current number of farmers markets, predicted number of farmers markets, cluster, election data, USDA data, Census data, and PCA coordinates in one table.  The table is arranged in order of most underserved to most overserved.
 ```{r}
-FinalCounties = left_join(All_Final_Data_Cleaned2, Expected %>% dplyr::select(-Freq), 
+FarmersMarketPredictions = left_join(All_Final_Data_Cleaned2, Expected %>% dplyr::select(-Freq), 
                           by = c("RowName"="County")) %>%
             dplyr::select(Fips:Freq, Expected, Residual, Component, clust, 
                           CountyArea:TempRange, Dim.1:Dim.30 ) %>%
             arrange(Component) %>% rename(Cluster = clust, ExpectedFreq = Expected)
-write.csv(FinalCounties, "Cleaned Data/FarmersMarketPredictions.csv")
+write.csv(FarmersMarketPredictions, "Cleaned Data/FarmersMarketPredictions.csv")
 ```
-Le fin!
+Now we have all the counties ranked in terms of their saturation, from most underserved to most saturated.  
+
+###Proposed Actions
+The "FarmersMarketPredictions.csv" table is meant as a starting point of research should an entrepreneur seek to start a farmers market without a location in mind.  It is suggested s/he look through the spreadsheet, which is ranked in order of most underserved, to find a county that may present itself.  S/he can go National Farmers Market Directory hosted by the USDA to find existing farmers markets in the area to determine a city/location.  If an entrepreneur should already have a location in mind, s/he can find the county on the aforementioned spreadsheet to compare the observed and expected number of farmers markets in that county.  Also, s/he can find other pertinent county level statistics that may assist in determining the viability of that county.
+
+###Expected Benefits
+This study has identified numerous counties that are underserved by farmers markets under the current conditions.  These communities, farmers and consumers alike, will likely benefit from more farmers markets.  Furthermore, with the vast amount of county level variables collected, new models can easily be created that analyze different factors.  For example, one can easily estimate the effect of political affiliation on farmers markets.  Lastly, this methodology is flexible and can be used to model any other count variable at the county level.  For example, one can model the number of restaurants by county of a large restaurant chain and identify potentially fruitful markets.
+
